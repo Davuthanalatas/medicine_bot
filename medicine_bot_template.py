@@ -4,8 +4,13 @@ import openai
 import json
 import os
 import sys
+from dotenv import load_dotenv
+import os
 
-openai.api_key = "find_the_cource_API_key_from_moodle"  # assume API key is set
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+
 
 
 
@@ -125,25 +130,70 @@ LOCAL_FUNCTIONS = {
 
 
 
-SYSTEM_MESSAGE = {
-    "role": "system",
-    "content": (
-        "You are a professional and friendly pharmacist assistant. "
-        "You ONLY answer questions about these six medicines: "
-        "aspirin, ibuprofen, paracetamol, amoxicillin, metformin, lisinopril. "
-        "You MUST always call the appropriate function to retrieve information before answering. "
-        "Never answer from memory or guess — only use what the function returns. "
-        "If the user asks about anything outside these six medicines, "
-        "politely let them know you can only help with these specific medications. "
-        "Always be professional, clear, and kind."
+# system message and memory
+messages = [
+    {
+        "role": "system",
+        "content": (
+            "You are a professional and friendly pharmacist assistant. "
+            "You ONLY answer questions about these six medicines: "
+            "aspirin, ibuprofen, paracetamol, amoxicillin, metformin, lisinopril. "
+            "You MUST always call the appropriate function before answering. "
+            "Never answer from memory or guess. "
+            "If asked about anything else, politely redirect."
+        )
+    }
+]
+
+print("Pharmacist Bot ready. Type 'exit' or 'quit' to stop.\n")
+
+while True:
+    # get user input
+    user_input = input("You: ").strip()
+    if user_input.lower() in ("exit", "quit"):
+        print("Pharmacist: Take care! Goodbye.")
+        break
+
+    # add user message to memory
+    messages.append({"role": "user", "content": user_input})
+
+    # TODO-1: first API call
+    response = openai.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        tools=[{"type": "function", "function": schema} for schema in FUNCTION_SCHEMAS],
+        tool_choice="auto"
     )
-}
+    assistant_message = response.choices[0].message
 
+    # TODO-2: check if function call or direct answer
+    if assistant_message.tool_calls is None:
+        # direct answer - out of scope question
+        print("Pharmacist:", assistant_message.content)
+        messages.append({"role": "assistant", "content": assistant_message.content})
 
-response = openai.chat.completions.create(
-    model="gpt-4o",
-    messages=messages,
-    tools=[{"type": "function", "function": schema} for schema in FUNCTION_SCHEMAS],
-    tool_choice="auto"  # let the model decide whether to call a function
-)
-assistet_message = response.choices[0].message
+    else:
+        # TODO-3: run local lookup
+        tool_call = assistant_message.tool_calls[0]
+        fn_name = tool_call.function.name
+        fn_args = json.loads(tool_call.function.arguments)
+        tool_call_id = tool_call.id
+        result = LOCAL_FUNCTIONS[fn_name](fn_args)
+
+        # TODO-4: send result back, get final answer
+        messages.append(assistant_message)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": fn_name,
+            "content": result
+        })
+
+        final_response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            tools=[{"type": "function", "function": schema} for schema in FUNCTION_SCHEMAS],
+        )
+        final_answer = final_response.choices[0].message.content
+        print("Pharmacist:", final_answer)
+        messages.append({"role": "assistant", "content": final_answer})
